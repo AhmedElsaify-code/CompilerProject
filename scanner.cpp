@@ -1,98 +1,13 @@
 
 #include "scanner.h"
 
+#include <cctype>
 #include <regex>
+#include <string>
 #include <unordered_map>
 #include <vector>
-#include <string>
 
 using namespace std;
-
-struct TokenRule {
-    string type;
-    regex pattern;
-};
-
-static const unordered_map<string, string> keywords = {
-    {"int", "INT"},
-    {"void", "VOID"},
-    {"char", "CHAR"},
-    {"float", "FLOAT"},
-    {"double", "DOUBLE"},
-    {"long", "LONG"},
-    {"short", "SHORT"},
-    {"bool", "BOOL"},
-    {"main", "MAIN"},
-    {"while", "WHILE"},
-    {"return", "RETURN"},
-    {"if", "IF"},
-    {"else", "ELSE"},
-    {"for", "FOR"}
-};
-
-static const vector<TokenRule> rules = {
-    {"WHITESPACE", regex(R"(\s+)")},
-    {"NUMBER", regex(R"([0-9]+)")},
-    {"IDENTIFIER", regex(R"([a-zA-Z_][a-zA-Z0-9_]*)")},
-
-    {"MULTI_OPERATOR", regex(R"(\+\+|--|&&|\|\||==|!=|<=|>=)")},
-
-    {"ASSIGN", regex(R"(=)")},
-    {"RELATIONAL_OPERATOR", regex(R"([<>])")},
-    {"LOGICAL_NOT", regex(R"(!)")},
-    {"ARITHMETIC_OPERATOR", regex(R"([+\-*/%])")},
-
-    {"LPAREN", regex(R"(\()")},
-    {"RPAREN", regex(R"(\))")},
-    {"LBRACE", regex(R"(\{)")},
-    {"RBRACE", regex(R"(\})")},
-    {"LBRACKET", regex(R"(\[)")},
-    {"RBRACKET", regex(R"(\])")},
-    {"SEMICOLON", regex(R"(;)")},
-    {"COMMA", regex(R"(,)")}
-};
-
-static void advancePosition(
-    const string& text,
-    int& line,
-    int& column
-) {
-    for (char ch : text) {
-        if (ch == '\n') {
-            ++line;
-            column = 1;
-        } else {
-            ++column;
-        }
-    }
-}
-
-static string classifyToken(
-    const string& ruleType,
-    const string& value
-) {
-    if (ruleType == "IDENTIFIER") {
-        auto it = keywords.find(value);
-
-        if (it != keywords.end()) {
-            return it->second;
-        }
-    }
-
-    if (ruleType == "MULTI_OPERATOR") {
-        if (value == "++" || value == "--") {
-            return "INCREMENT_OPERATOR";
-        }
-
-        if (value == "&&" || value == "||") {
-            return "LOGICAL_OPERATOR";
-        }
-
-        return "RELATIONAL_OPERATOR";
-    }
-
-    return ruleType;
-}
 
 bool scanSource(
     const string& source,
@@ -102,110 +17,175 @@ bool scanSource(
     tokens.clear();
     errors.clear();
 
-    size_t pos = 0;
+    const unordered_map<string, string> keywords = {
+        {"int", "INT"},
+        {"float", "FLOAT"},
+        {"char", "CHAR"},
+        {"bool", "BOOL"},
+        {"main", "MAIN"},
+        {"if", "IF"},
+        {"else", "ELSE"},
+        {"while", "WHILE"},
+        {"return", "RETURN"},
+        {"void", "VOID"},
+        {"true", "BOOL_LITERAL"},
+        {"false", "BOOL_LITERAL"}
+    };
+
+    const vector<pair<regex, string>> patterns = {
+        {regex(R"(^[ \t\r\n]+)"), "WHITESPACE"},
+        {regex(R"(^[0-9]+\.[0-9]+)"), "FLOAT_NUMBER"},
+        {regex(R"(^[0-9]+)"), "NUMBER"},
+        {regex(R"(^'(\\.|[^'\\])')"), "CHAR_LITERAL"},
+        {regex(R"(^[a-zA-Z_][a-zA-Z0-9_]*)"), "IDENTIFIER"},
+        {regex(R"(^(\+\+|--|==|!=|<=|>=|&&|\|\|))"), "OPERATOR"},
+        {regex(R"(^[=<>!])"), "RELATIONAL_OPERATOR"},
+        {regex(R"(^[+\-*/%])"), "ARITHMETIC_OPERATOR"},
+        {regex(R"(^[(){};,])"), "PUNCTUATION"}
+    };
+
+    size_t i = 0;
     int line = 1;
     int column = 1;
 
-    while (pos < source.size()) {
-        string remaining = source.substr(pos);
+    while (i < source.size()) {
+        string remaining = source.substr(i);
+        smatch match;
+        string value;
+        string type;
 
-        if (remaining.rfind("//", 0) == 0) {
-            size_t end = source.find('\n', pos);
-
-            if (end == string::npos) {
-                advancePosition(
-                    source.substr(pos), line, column
-                );
-                pos = source.size();
-            } else {
-                advancePosition(
-                    source.substr(pos, end - pos),
-                    line, column
-                );
-                pos = end;
+        if (source[i] == '/' && i + 1 < source.size()) {
+            if (source[i + 1] == '/') {
+                while (i < source.size() && source[i] != '\n') {
+                    ++i;
+                    ++column;
+                }
+                continue;
             }
 
-            continue;
-        }
+            if (source[i + 1] == '*') {
+                int startLine = line;
+                int startColumn = column;
 
-        if (remaining.rfind("/*", 0) == 0) {
-            size_t end = source.find("*/", pos + 2);
+                i += 2;
+                column += 2;
 
-            if (end == string::npos) {
-                errors.push_back({
-                    "Unterminated block comment",
-                    line,
-                    column
-                });
+                bool closed = false;
 
-                break;
+                while (i < source.size()) {
+                    if (source[i] == '*' &&
+                        i + 1 < source.size() &&
+                        source[i + 1] == '/') {
+                        i += 2;
+                        column += 2;
+                        closed = true;
+                        break;
+                    }
+
+                    if (source[i] == '\n') {
+                        ++line;
+                        column = 1;
+                        ++i;
+                    } else {
+                        ++i;
+                        ++column;
+                    }
+                }
+
+                if (!closed) {
+                    errors.push_back({
+                        "Unterminated block comment",
+                        startLine,
+                        startColumn
+                    });
+                }
+
+                continue;
             }
-
-            size_t length = end + 2 - pos;
-
-            advancePosition(
-                source.substr(pos, length),
-                line, column
-            );
-
-            pos += length;
-            continue;
         }
 
-        bool matched = false;
+        bool found = false;
 
-        for (const auto& rule : rules) {
-            smatch match;
-
-            auto start = source.cbegin()
-                       + static_cast<ptrdiff_t>(pos);
-
-            if (!regex_search(
-                    start,
-                    source.cend(),
+        for (const auto& pattern : patterns) {
+            if (regex_search(
+                    remaining,
                     match,
-                    rule.pattern,
+                    pattern.first,
                     regex_constants::match_continuous
                 )) {
-                continue;
+                value = match.str();
+                type = pattern.second;
+                found = true;
+                break;
             }
-
-            string value = match.str();
-
-            if (value.empty()) {
-                continue;
-            }
-
-            if (rule.type != "WHITESPACE") {
-                string type = classifyToken(
-                    rule.type, value
-                );
-
-                tokens.push_back({
-                    type, value, line, column
-                });
-            }
-
-            advancePosition(value, line, column);
-            pos += value.size();
-            matched = true;
-            break;
         }
 
-        if (!matched) {
+        if (!found) {
             errors.push_back({
-                string("Unknown character: '")
-                    + source[pos] + "'",
+                string("Unrecognized character: ") + source[i],
                 line,
                 column
             });
 
-            advancePosition(
-                source.substr(pos, 1), line, column
-            );
-
-            ++pos;
+            ++i;
+            ++column;
+            continue;
         }
+
+        if (type == "WHITESPACE") {
+            for (char ch : value) {
+                if (ch == '\n') {
+                    ++line;
+                    column = 1;
+                } else {
+                    ++column;
+                }
+            }
+
+            i += value.size();
+            continue;
+        }
+
+        if (type == "IDENTIFIER") {
+            auto keyword = keywords.find(value);
+
+            if (keyword != keywords.end()) {
+                type = keyword->second;
+            }
+        }
+
+        if (type == "PUNCTUATION") {
+            if (value == "(") type = "LPAREN";
+            else if (value == ")") type = "RPAREN";
+            else if (value == "{") type = "LBRACE";
+            else if (value == "}") type = "RBRACE";
+            else if (value == ";") type = "SEMICOLON";
+            else if (value == ",") type = "COMMA";
+        }
+
+        if (type == "OPERATOR") {
+            if (value == "==" || value == "!=" ||
+                value == "<=" || value == ">=") {
+                type = "RELATIONAL_OPERATOR";
+            } else if (value == "&&" || value == "||") {
+                type = "LOGICAL_OPERATOR";
+            } else if (value == "++" || value == "--") {
+                type = "INCREMENT_OPERATOR";
+            }
+        }
+
+        if (value == "=") {
+            type = "ASSIGN";
+        } else if (value == "<" || value == ">") {
+            type = "RELATIONAL_OPERATOR";
+        } else if (value == "!") {
+            type = "LOGICAL_OPERATOR";
+        }
+
+        tokens.push_back({type, value, line, column});
+
+        i += value.size();
+        column += static_cast<int>(value.size());
     }
 
     return errors.empty();
